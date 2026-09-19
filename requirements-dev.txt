@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8.0
+reportlab>=4.0       # scripts/generate_samples.py
+pglast>=6.0          # optional: syntax-checks the SQL migrations
+pyinstaller>=6.5     # packaging

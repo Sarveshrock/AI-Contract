@@ -1,0 +1,14 @@
+.env
+data/chroma/
+data/storage/
+data/logs/
+data/*.db
+data/*.db-*
+data/vectors.db*
+data/.chroma_probe.json
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/
+*.spec.bak
