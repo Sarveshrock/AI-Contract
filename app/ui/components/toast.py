@@ -1,6 +1,7 @@
 """Transient notifications (top-right), with a soft slide/fade transition."""
 from __future__ import annotations
 
+from PyQt6 import sip
 from PyQt6.QtCore import QPoint, QPropertyAnimation, Qt, QTimer
 from PyQt6.QtWidgets import QFrame, QHBoxLayout, QLabel, QWidget
 
@@ -32,7 +33,7 @@ class Toast(QFrame):
         self._ms = ms
 
     def life(self, on_close) -> None:
-        QTimer.singleShot(self._ms, lambda: self._close(on_close))
+        QTimer.singleShot(self._ms, lambda: self._close(on_close) if not sip.isdeleted(self) else None)
 
     def _close(self, on_close) -> None:
         if Motion.enabled:

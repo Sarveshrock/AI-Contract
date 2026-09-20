@@ -1,22 +1,32 @@
 """ContractCard and ObligationCard."""
 from __future__ import annotations
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtWidgets import QFrame, QHBoxLayout, QProgressBar, QVBoxLayout, QWidget
+from PyQt6.QtCore import QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtWidgets import QFrame, QHBoxLayout, QVBoxLayout, QWidget
 
 from app.services.contracts import ContractSummary
 from app.services.obligations import ObligationRow
 from app.ui.components.base import elide, fmt_date, label, repolish
+from app.ui.components.polish import Avatar, ScoreRing
 from app.ui.components.primitives import StatusBadge
-from app.ui.theme.tokens import SPACE, severity_tone, status_tone
+from app.ui.theme.tokens import SPACE, is_classic, severity_tone, status_tone, tone_color
+
+
+def score_tone(score: float | None) -> str:
+    """Review-priority scores: low is calm, high deserves attention."""
+    if score is None:
+        return "neutral"
+    return "success" if score < 35 else "warning" if score < 65 else "danger"
 
 
 class _ClickableCard(QFrame):
     clicked = pyqtSignal(object)
 
-    def __init__(self, payload: object, parent: QWidget | None = None) -> None:
+    def __init__(self, payload: object, parent: QWidget | None = None, *, stripe: str | None = None) -> None:
         super().__init__(parent)
         self._payload = payload
+        self._stripe = stripe
         self.setProperty("panel", "card")
         self.setProperty("selected", False)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
@@ -26,6 +36,16 @@ class _ClickableCard(QFrame):
     def set_selected(self, selected: bool) -> None:
         self.setProperty("selected", selected)
         repolish(self)
+
+    def paintEvent(self, e) -> None:  # noqa: N802
+        super().paintEvent(e)
+        if self._stripe and not is_classic():
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(tone_color(self._stripe)))
+            p.drawRoundedRect(QRectF(0, 10, 3.5, self.height() - 20), 1.7, 1.7)
+            p.end()
 
     def mouseReleaseEvent(self, e) -> None:  # noqa: N802
         if e.button() == Qt.MouseButton.LeftButton:
@@ -41,11 +61,14 @@ class _ClickableCard(QFrame):
 
 class ContractCard(_ClickableCard):
     def __init__(self, s: ContractSummary, parent: QWidget | None = None) -> None:
-        super().__init__(s.contract.id, parent)
         c = s.contract
+        super().__init__(c.id, parent, stripe=status_tone(c.status.value))
         self.setAccessibleName(f"Contract {c.title}")
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(SPACE["md"], SPACE["md"], SPACE["md"], SPACE["md"])
+        outer = QHBoxLayout(self)
+        outer.setContentsMargins(SPACE["lg"] + 2, SPACE["md"], SPACE["lg"], SPACE["md"])
+        outer.setSpacing(SPACE["lg"])
+        outer.addWidget(Avatar("contract", size=42, tone="violet" if c.is_demo else "cyan"), 0, Qt.AlignmentFlag.AlignTop)
+        lay = QVBoxLayout()
         lay.setSpacing(6)
         top = QHBoxLayout()
         top.addWidget(label(elide(c.title, 46), "h3"), 1)
@@ -70,26 +93,24 @@ class ContractCard(_ClickableCard):
             foot.addWidget(StatusBadge(f"analysis {c.analysis_status.value}", status_tone(c.analysis_status.value)))
         foot.addStretch(1)
         lay.addLayout(foot)
+        outer.addLayout(lay, 1)
         if c.business_risk_score is not None:
-            bar = QProgressBar()
-            bar.setRange(0, 100)
-            bar.setValue(int(c.business_risk_score))
-            bar.setTextVisible(False)
-            bar.setFixedHeight(6)
-            bar.setToolTip(f"Business review score {c.business_risk_score:.0f}/100 (extraction uncertainty {c.extraction_uncertainty_score or 0:.0f}). A review-priority aid, not a legal conclusion.")
-            lay.addWidget(bar)
+            ring = ScoreRing(size=56)
+            ring.set_value(c.business_risk_score, score_tone(c.business_risk_score))
+            ring.setToolTip(f"Business review score {c.business_risk_score:.0f}/100 (extraction uncertainty {c.extraction_uncertainty_score or 0:.0f}). A review-priority aid, not a legal conclusion.")
+            outer.addWidget(ring, 0, Qt.AlignmentFlag.AlignVCenter)
 
 
 class ObligationCard(_ClickableCard):
     def __init__(self, r: ObligationRow, parent: QWidget | None = None) -> None:
-        super().__init__(r.obligation.id, parent)
+        super().__init__(r.obligation.id, parent, stripe=status_tone(r.status_label))
         o = r.obligation
         self.setAccessibleName(f"Obligation {o.title}")
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(SPACE["md"], SPACE["sm"], SPACE["md"], SPACE["sm"])
+        lay.setContentsMargins(SPACE["lg"] + 2, SPACE["sm"] + 2, SPACE["md"], SPACE["sm"] + 2)
         lay.setSpacing(4)
         top = QHBoxLayout()
-        top.addWidget(label(elide(o.title, 60), "muted"), 1)
+        top.addWidget(label(elide(o.title, 60), None), 1)
         top.addWidget(StatusBadge(r.status_label, status_tone(r.status_label)))
         lay.addLayout(top)
         lay.addWidget(label(f"{r.contract_title} · {o.responsible_party_name or 'party unknown'} → {o.beneficiary_name or '—'}", "faint"))

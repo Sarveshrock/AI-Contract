@@ -142,7 +142,7 @@ class IntegrationsScreen(BaseScreen):
         clear_layout(self.health)
         tiles = [
             ("db", "Backend", True, "Supabase — row-level security enforced server-side" if not info.is_demo else "Local SQLite demo mode. Add Supabase settings to .env for teams."),
-            ("cloud", "AI (OpenAI)", info.ai_configured, info.model if info.ai_configured else "Not configured. Set OPENAI_API_KEY or OPENAI_BASE_URL."),
+            ("cloud", "AI (OpenAI)", info.ai_configured, info.model if info.ai_configured else (info.extras.get("offline_reason") or "Not configured. Set OPENAI_API_KEY or OPENAI_BASE_URL.")),
             ("layers", "Embeddings", "Offline" not in info.embedder_note, f"{info.embedder} — {info.embedder_note}"),
             ("cube", "Vector index", not info.index_error, f"{info.vector_backend}: {info.vector_note or 'ready'}" + (f" — {info.index_error}" if info.index_error else "")),
             ("evidence", "OCR (Tesseract)", info.ocr_available, "Ready." if info.ocr_available else "Not installed. Scanned PDFs are rejected with an explanation."),

@@ -402,3 +402,33 @@ def test_risk_observatory_aggregates(demo_ws):
     names, types, grid = demo_ws.analytics.risk_heatmap()
     assert names and types and len(grid) == len(names) and all(len(r) == len(types) for r in grid)
     assert len(demo_ws.analytics.risk_trend()) >= 3
+
+
+# ---------------------------------------------------------------- Claude provider and empty OpenAI balance
+def test_anthropic_llm_returns_validated_structured_output(monkeypatch):
+    from types import SimpleNamespace
+
+    from pydantic import BaseModel
+
+    from app.agents.llm import AnthropicLLM
+
+    class Out(BaseModel):
+        answer: str
+
+    class FakeMessages:
+        def create(self, **kw):
+            assert kw["tool_choice"] == {"type": "tool", "name": "respond"} and kw["tools"][0]["input_schema"]["properties"]["answer"]
+            return SimpleNamespace(stop_reason="tool_use", content=[SimpleNamespace(type="tool_use", input={"answer": "ok"})], usage=SimpleNamespace(input_tokens=3, output_tokens=2))
+
+    llm = AnthropicLLM.__new__(AnthropicLLM)
+    llm._client, llm.model, llm.last_call = SimpleNamespace(messages=FakeMessages()), "claude-test", None
+    assert llm.structured(system="s", user="u", schema=Out, purpose="t").answer == "ok"
+    assert llm.last_call.prompt_tokens == 3
+
+
+def test_quota_errors_are_recognised_for_both_providers():
+    from app.core.errors import is_quota_exhausted
+
+    assert is_quota_exhausted(Exception("Error code: 429 - credit_balance_exhausted"))
+    assert is_quota_exhausted(Exception("Your credit balance is too low to access the Anthropic API"))
+    assert not is_quota_exhausted(Exception("rate limit reached, retry later"))

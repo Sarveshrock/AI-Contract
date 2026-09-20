@@ -11,6 +11,10 @@ def _rgba(hex_color: str, alpha: float) -> str:
 
 
 def build_qss(t: Theme) -> str:
+    if t.style == "classic":
+        from app.ui.theme.classic import build_classic_qss
+
+        return build_classic_qss(t)
     r = RADIUS
     return f"""
 * {{ font-family: {FONT_FAMILY}; font-size: {TYPE['base']}px; color: {t.text}; outline: none; }}
@@ -36,6 +40,23 @@ QFrame[panel="flat"] {{ background: transparent; border: none; }}
 QFrame[panel="card"] {{ background: {_rgba(t.panel, 0.9)}; border: 1px solid {t.border}; border-radius: {r['md']}px; }}
 QFrame[panel="card"]:hover {{ border-color: {t.border_hi}; background: {t.panel_hi}; }}
 QFrame[panel="card"][selected="true"] {{ border: 1px solid {t.cyan}; background: {_rgba(t.cyan, 0.08)}; }}
+QFrame[panel="stat"] {{ background: {_rgba(t.panel, 0.9)}; border: 1px solid {t.border}; border-radius: {r['lg']}px; }}
+QFrame[panel="stat"]:hover {{ border-color: {t.border_hi}; background: {t.panel_hi}; }}
+QFrame[panel="stat"][active="true"] {{ border: 1px solid {t.cyan}; background: {_rgba(t.cyan, 0.10)}; }}
+QFrame[panel="stat"]:focus {{ border-color: {t.focus}; }}
+QFrame[panel="fact"] {{ background: {_rgba(t.bg1, 0.75)}; border: 1px solid {t.border}; border-radius: {r['md']}px; }}
+QFrame[panel="callout"] {{ background: {_rgba(t.bg1, 0.8)}; border: 1px solid {t.border}; border-radius: {r['md']}px; }}
+QFrame[panel="callout"]:hover {{ border-color: {t.border_hi}; }}
+QFrame[panel="hero"] {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1, stop:0 {_rgba(t.indigo, 0.22)}, stop:0.55 {_rgba(t.panel, 0.9)}, stop:1 {_rgba(t.cyan, 0.10)}); border: 1px solid {t.border_hi}; border-radius: {r['lg']}px; }}
+QFrame[panel="composer"] {{ background: {_rgba(t.bg2, 0.95)}; border: 1px solid {t.border_hi}; border-radius: 22px; }}
+QFrame[panel="suggest"] {{ background: {_rgba(t.panel, 0.85)}; border: 1px solid {t.border}; border-radius: {r['lg']}px; }}
+QFrame[panel="suggest"]:hover {{ border-color: {t.cyan_dim}; background: {t.panel_hi}; }}
+QFrame#TopBar {{ background: rgba(6,10,18,0.85); border: none; border-bottom: 1px solid {t.border}; }}
+QFrame#NavBar {{ background: rgba(8,13,24,0.7); border: none; border-right: 1px solid {t.border}; }}
+QFrame#DemoBanner {{ background: rgba(139,124,255,0.16); border: none; border-bottom: 1px solid rgba(139,124,255,0.45); }}
+QFrame#DemoBanner QLabel {{ color: {t.violet}; font-size: 11px; font-weight: 600; }}
+QLabel#Wordmark {{ font-size: 15px; font-weight: 700; letter-spacing: 2px; }}
+QLabel#WordmarkSub {{ font-size: 9px; font-weight: 600; color: {t.cyan}; }}
 QFrame[divider="true"] {{ background: {t.border}; max-height: 1px; min-height: 1px; border: none; }}
 
 /* ---- buttons ---- */

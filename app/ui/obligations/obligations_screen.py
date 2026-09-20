@@ -6,7 +6,8 @@ from typing import Any
 
 from PyQt6.QtCore import QPointF, QRectF, Qt
 from PyQt6.QtGui import QColor, QPainter, QPen
-from PyQt6.QtWidgets import QComboBox, QFileDialog, QHBoxLayout, QScrollArea, QSplitter, QTabWidget, QVBoxLayout, QWidget
+from PyQt6.QtGui import QAction
+from PyQt6.QtWidgets import QComboBox, QFileDialog, QGridLayout, QHBoxLayout, QMenu, QScrollArea, QSplitter, QStackedWidget, QTabWidget, QVBoxLayout, QWidget
 
 from app.models.enums import ObligationStatus
 from app.services.obligations import ObligationRow
@@ -14,12 +15,16 @@ from app.ui.components.base import clear_layout, fmt_date, label, days_text
 from app.ui.components.data_table import Column, DataTable
 from app.ui.components.dialogs import ConfirmationDialog, TextPromptDialog
 from app.ui.components.evidence_panel import EvidencePanel, EvidenceVM
+from app.ui.components.polish import AccentCard, Avatar, FactTile, StatTile, initials
 from app.ui.components.primitives import GlassPanel, NeonButton, SearchBar, StatusBadge
 from app.ui.context import BaseScreen
 from app.ui.theme.tokens import SPACE, status_tone, theme
 
 VIEWS = [("all", "All"), ("pending", "Pending"), ("completed", "Completed"), ("overdue", "Overdue"), ("unassigned", "Unassigned"), ("recurring", "Recurring"),
          ("no_deadline", "No explicit deadline"), ("needs_review", "Needs review"), ("disputed", "Disputed")]
+CHIP_VIEWS = ("all", "recurring", "no_deadline", "disputed")  # the KPI tiles already act as filters for the others
+KPI_TILES = [("open", "Open", "obligations", "cyan", "pending"), ("overdue", "Overdue", "alert", "danger", "overdue"), ("unassigned", "Unassigned", "user", "warning", "unassigned"),
+             ("review", "Needs review", "eye", "violet", "needs_review"), ("done", "Completed", "check", "success", "completed")]
 GROUPS = [("none", "No grouping"), ("contract", "By contract"), ("party", "By responsible party"), ("owner", "By business owner"), ("category", "By category")]
 
 
@@ -97,17 +102,26 @@ class ObligationsScreen(BaseScreen):
         lay = QVBoxLayout(root)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(SPACE["md"])
-        chips = QHBoxLayout()
+        kpis = QHBoxLayout()
+        kpis.setSpacing(SPACE["md"])
+        self._kpis: dict[str, StatTile] = {}
+        for key, title, icon, tone, view in KPI_TILES:
+            tile = StatTile(title, icon, tone)
+            tile.clicked.connect(lambda v=view: self._set_view('all' if self._view == v else v))
+            self._kpis[key] = tile
+            kpis.addWidget(tile)
+        lay.addLayout(kpis)
+        bar = QHBoxLayout()
+        bar.setSpacing(SPACE["sm"])
         self._chips: dict[str, NeonButton] = {}
         for key, name in VIEWS:
+            if key not in CHIP_VIEWS:
+                continue
             b = NeonButton(name, "chip")
             b.setChecked(key == "all")
             b.clicked.connect(lambda _=False, k=key: self._set_view(k))
             self._chips[key] = b
-            chips.addWidget(b)
-        chips.addStretch(1)
-        lay.addLayout(chips)
-        bar = QHBoxLayout()
+            bar.addWidget(b)
         self.search = SearchBar("Search obligations, contracts or parties")
         self.search.queryChanged.connect(lambda _q: self._apply())
         self.group = QComboBox()
@@ -124,12 +138,10 @@ class ObligationsScreen(BaseScreen):
         split.setChildrenCollapsible(False)
         self.table = DataTable([
             Column("Obligation", lambda r: r.obligation.title, stretch=True),
-            Column("Contract", lambda r: r.contract_title, width=140),
-            Column("Responsible", lambda r: r.obligation.responsible_party_name or "—", width=100),
-            Column("Owner", lambda r: r.owner_name or "unassigned", width=90),
-            Column("Due", lambda r: r.next_due, lambda v, r: fmt_date(v) if v else ("awaiting event" if r.deadline_kind and r.deadline_kind.value == "event_triggered" else "—"), width=100),
-            Column("Status", lambda r: r.status_label, kind="badge", tone=lambda v, r: status_tone(v), width=100),
-            Column("Review", lambda r: r.obligation.review_status.value, kind="badge", tone=lambda v, r: status_tone(v), width=105),
+            Column("Contract", lambda r: r.contract_title, width=130),
+            Column("Owner", lambda r: r.owner_name or "unassigned", width=92),
+            Column("Due", lambda r: r.next_due, lambda v, r: fmt_date(v) if v else ("awaiting event" if r.deadline_kind and r.deadline_kind.value == "event_triggered" else "—"), width=104),
+            Column("Status", lambda r: r.status_label, kind="badge", tone=lambda v, r: status_tone(v), width=104),
         ], empty_text="No obligations match this view.")
         self.table.rowSelected.connect(self._selected)
         left = GlassPanel()
@@ -137,46 +149,88 @@ class ObligationsScreen(BaseScreen):
         split.addWidget(left)
         self.detail = self._build_detail()
         split.addWidget(self.detail)
-        self.detail.setMinimumWidth(360)
+        self.detail.setMinimumWidth(400)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 2)
-        split.setSizes([700, 420])
+        split.setSizes([680, 470])
         lay.addWidget(split, 1)
         return root
 
     def _build_detail(self) -> QWidget:
-        panel = GlassPanel("Obligation detail")
-        self.d_title = label("Select an obligation", "h3", wrap=True)
+        panel = GlassPanel(padding=SPACE["md"])
+        self.detail_stack = QStackedWidget()
+        panel.body.addWidget(self.detail_stack)
+
+        # -- placeholder page
+        ph = QWidget()
+        pl = QVBoxLayout(ph)
+        pl.addStretch(1)
+        pl.addWidget(Avatar("obligations", size=56), 0, Qt.AlignmentFlag.AlignHCenter)
+        self.d_title = label("Select an obligation", "h3", align=Qt.AlignmentFlag.AlignHCenter)
+        pl.addWidget(self.d_title)
+        pl.addWidget(label("See who owes what, when it is due and the contract text behind it. Completion is always recorded by a person, with evidence.", "muted", wrap=True, align=Qt.AlignmentFlag.AlignHCenter))
+        pl.addStretch(2)
+        self.detail_stack.addWidget(ph)
+
+        # -- detail page (scrolls: the panel is narrow on small screens)
+        page = QScrollArea()
+        page.setWidgetResizable(True)
+        page.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        v = QVBoxLayout(inner)
+        v.setContentsMargins(4, 4, 10, 4)
+        v.setSpacing(SPACE["md"])
+        self.d_name = label("", "h3", wrap=True)
         self.d_badges = QHBoxLayout()
+        self.d_badges.setSpacing(6)
         self.d_text = label("", "muted", wrap=True)
-        self.d_facts = label("", "faint", wrap=True)
-        panel.body.addWidget(self.d_title)
-        panel.body.addLayout(self.d_badges)
-        panel.body.addWidget(self.d_text)
-        panel.body.addWidget(self.d_facts)
+        v.addWidget(self.d_name)
+        v.addLayout(self.d_badges)
+        v.addWidget(self.d_text)
+        self.d_grid = QGridLayout()
+        self.d_grid.setHorizontalSpacing(SPACE["sm"])
+        self.d_grid.setVerticalSpacing(SPACE["sm"])
+        v.addLayout(self.d_grid)
+        self.d_callouts = QVBoxLayout()
+        self.d_callouts.setSpacing(SPACE["sm"])
+        v.addLayout(self.d_callouts)
+
         own = QHBoxLayout()
+        own.setSpacing(SPACE["sm"])
+        self.d_avatar = Avatar(text="?", size=30, tone="violet")
+        own.addWidget(self.d_avatar)
         own.addWidget(label("Business owner", "faint"))
         self.owner = QComboBox()
-        self.owner.setMinimumWidth(180)
+        self.owner.setMinimumWidth(150)
         self.owner.activated.connect(self._owner_changed)
         own.addWidget(self.owner, 1)
-        panel.body.addLayout(own)
+        v.addLayout(own)
+
         row = QHBoxLayout()
-        self.b_start = NeonButton("Start", "default")
+        row.setSpacing(SPACE["sm"])
         self.b_done = NeonButton("Record completion…", "success", "check")
-        self.b_dispute = NeonButton("Flag dispute…", "default", "flag")
-        self.b_exception = NeonButton("Exception…", "default")
-        self.b_review = NeonButton("Mark reviewed", "default", "eye")
-        for b in (self.b_start, self.b_done, self.b_dispute, self.b_exception, self.b_review):
+        self.b_start = NeonButton("Start", "default", "play")
+        more = NeonButton("More", "default", "dots")
+        menu = QMenu(more)
+        self.b_dispute = QAction("Flag dispute…", menu)
+        self.b_exception = QAction("Create exception…", menu)
+        self.b_review = QAction("Mark reviewed", menu)
+        for a in (self.b_dispute, self.b_exception, self.b_review):
+            menu.addAction(a)
+        more.setMenu(menu)
+        self.b_more = more
+        for b in (self.b_done, self.b_start, more):
             row.addWidget(b)
         row.addStretch(1)
-        panel.body.addLayout(row)
+        v.addLayout(row)
         self.b_start.clicked.connect(lambda: self._status(ObligationStatus.IN_PROGRESS))
         self.b_done.clicked.connect(self._complete)
-        self.b_dispute.clicked.connect(self._dispute)
-        self.b_exception.clicked.connect(self._exception)
-        self.b_review.clicked.connect(self._reviewed)
+        self.b_dispute.triggered.connect(self._dispute)
+        self.b_exception.triggered.connect(self._exception)
+        self.b_review.triggered.connect(self._reviewed)
+
         tabs = QTabWidget()
+        tabs.setMinimumHeight(300)
         ev_w = QWidget()
         ev_l = QVBoxLayout(ev_w)
         self.evidence = EvidencePanel("Evidence")
@@ -188,12 +242,8 @@ class ObligationsScreen(BaseScreen):
         notes_w = QWidget()
         n_l = QVBoxLayout(notes_w)
         self.notes_box = QVBoxLayout()
-        sc = QScrollArea()
-        sc.setWidgetResizable(True)
-        host = QWidget()
-        host.setLayout(self.notes_box)
-        sc.setWidget(host)
-        n_l.addWidget(sc, 1)
+        self.notes_box.setSpacing(SPACE["sm"])
+        n_l.addLayout(self.notes_box, 1)
         add = NeonButton("Add note…", "default", "plus")
         add.clicked.connect(self._note)
         n_l.addWidget(add)
@@ -209,7 +259,9 @@ class ObligationsScreen(BaseScreen):
         tabs.addTab(ev_w, "Evidence")
         tabs.addTab(notes_w, "Notes and history")
         tabs.addTab(dep_w, "Dependencies")
-        panel.body.addWidget(tabs, 1)
+        v.addWidget(tabs)
+        page.setWidget(inner)
+        self.detail_stack.addWidget(page)
         self._set_actions(False)
         return panel
 
@@ -227,6 +279,7 @@ class ObligationsScreen(BaseScreen):
         self._all = data["rows"]
         self._deps = data["deps"]
         self._members = data["members"]
+        self._update_kpis()
         self.owner.clear()
         self.owner.addItem("— unassigned —", None)
         for uid, name in self._members:
@@ -234,7 +287,7 @@ class ObligationsScreen(BaseScreen):
         self._apply()
 
     def on_show(self, params: dict[str, Any] | None = None) -> None:
-        if params and params.get("view") in self._chips:
+        if params and params.get("view") in dict(VIEWS):
             self._set_view(params["view"], reload=False)
         super().on_show(params)
 
@@ -242,8 +295,24 @@ class ObligationsScreen(BaseScreen):
         self._view = key
         for k, b in self._chips.items():
             b.setChecked(k == key)
+        self._sync_tiles()
         if hasattr(self, "_all"):
             self._apply()
+
+    def _update_kpis(self) -> None:
+        rows = self._all
+        open_ = [r for r in rows if r.obligation.status in (ObligationStatus.PENDING, ObligationStatus.IN_PROGRESS)]
+        self._kpis["open"].set_value(len(open_))
+        self._kpis["overdue"].set_value(sum(1 for r in rows if r.overdue))
+        self._kpis["unassigned"].set_value(sum(1 for r in open_ if r.obligation.owner_id is None))
+        self._kpis["review"].set_value(sum(1 for r in rows if r.obligation.review_status.value == "needs_review"))
+        self._kpis["done"].set_value(sum(1 for r in rows if r.obligation.status is ObligationStatus.COMPLETED))
+        self._sync_tiles()
+
+    def _sync_tiles(self) -> None:
+        active = {view: key for key, _t, _i, _c, view in KPI_TILES}
+        for key, tile in self._kpis.items():
+            tile.set_active(active.get(self._view) == key)
 
     def _apply(self) -> None:
         rows = [r for r in getattr(self, "_all", []) if self._match(r)]
@@ -269,21 +338,22 @@ class ObligationsScreen(BaseScreen):
 
     # ------------------------------------------------------------------ detail
     def _set_actions(self, on: bool) -> None:
-        for b in (self.b_start, self.b_done, self.b_dispute, self.b_exception, self.b_review, self.owner, self.open_clause):
+        for b in (self.b_start, self.b_done, self.b_more, self.b_dispute, self.b_exception, self.b_review, self.owner, self.open_clause):
             b.setEnabled(on)
 
     def _selected(self, r: ObligationRow | None) -> None:
         self._current = r
         clear_layout(self.d_badges)
+        clear_layout(self.d_grid)
+        clear_layout(self.d_callouts)
         if r is None:
-            self.d_title.setText("Select an obligation")
-            self.d_text.setText("")
-            self.d_facts.setText("")
+            self.detail_stack.setCurrentIndex(0)
             self._set_actions(False)
             return
         o = r.obligation
+        self.detail_stack.setCurrentIndex(1)
         self._set_actions(True)
-        self.d_title.setText(o.title)
+        self.d_name.setText(o.title)
         self.d_badges.addWidget(StatusBadge(r.status_label, status_tone(r.status_label)))
         self.d_badges.addWidget(StatusBadge(o.category.value, "info"))
         self.d_badges.addWidget(StatusBadge(o.review_status.value, status_tone(o.review_status.value)))
@@ -293,19 +363,39 @@ class ObligationsScreen(BaseScreen):
             self.d_badges.addWidget(StatusBadge("recurring", "violet"))
         self.d_badges.addStretch(1)
         self.d_text.setText(o.description)
-        facts = [f"Contract: {r.contract_title}", f"Responsible: {o.responsible_party_name or '—'}   Beneficiary: {o.beneficiary_name or '—'}"]
-        if o.trigger:
-            facts.append(f"Trigger: {o.trigger}")
-        if o.conditions:
-            facts.append(f"Conditions: {o.conditions}")
-        if o.deadline_text:
-            facts.append(f"Deadline as written: {o.deadline_text}")
+        self.d_text.setVisible(bool(o.description))
+
+        tiles: list[FactTile] = [
+            FactTile("Contract", r.contract_title, "contract", "cyan"),
+            FactTile("Parties", f"{o.responsible_party_name or '—'}  →  {o.beneficiary_name or '—'}", "user", "violet"),
+        ]
         if r.next_due:
-            facts.append(f"Next due: {fmt_date(r.next_due)} ({days_text((r.next_due - date.today()).days)}) — {r.deadline_validation.value.replace('_', ' ') if r.deadline_validation else ''}")
+            days = (r.next_due - date.today()).days
+            state = r.deadline_validation.value.replace("_", " ") if r.deadline_validation else ""
+            tiles.append(FactTile("Next due", f"{fmt_date(r.next_due)} · {days_text(days)}" + (f"\n{state}" if state else ""), "calendar", "danger" if days < 0 else "warning" if days <= 14 else "success"))
+        else:
+            tiles.append(FactTile("Next due", "No calculated date yet", "calendar", "warning", dim=True))
+        tiles.append(FactTile("Confidence", f"{o.confidence:.0%}", "shield_check", "success" if o.confidence >= 0.8 else "warning"))
+        if o.trigger:
+            tiles.append(FactTile("Trigger", o.trigger, "flag", "info"))
+        if o.conditions:
+            tiles.append(FactTile("Conditions", o.conditions, "filter", "info"))
+        for i, t in enumerate(tiles):
+            self.d_grid.addWidget(t, i // 2, i % 2)
+        self.d_grid.setColumnStretch(0, 1)
+        self.d_grid.setColumnStretch(1, 1)
+        if o.deadline_text:
+            c = AccentCard("cyan")
+            c.body.addWidget(label("DEADLINE AS WRITTEN", "faint"))
+            c.body.addWidget(label(f"“{o.deadline_text}”", "quote", wrap=True, selectable=True))
+            self.d_callouts.addWidget(c)
         if o.uncertainty:
-            facts.append(f"Uncertainty: {o.uncertainty}")
-        facts.append(f"Extraction confidence: {o.confidence:.0%}")
-        self.d_facts.setText("\n".join(facts))
+            c = AccentCard("warning")
+            c.body.addWidget(label("UNCERTAINTY", "faint"))
+            c.body.addWidget(label(o.uncertainty, "muted", wrap=True))
+            self.d_callouts.addWidget(c)
+
+        self.d_avatar.set_text(initials(r.owner_name) if r.owner_name else "?", "violet" if r.owner_name else "warning")
         i = self.owner.findData(o.owner_id)
         self.owner.setCurrentIndex(max(0, i))
         self.b_done.setEnabled(o.status is not ObligationStatus.COMPLETED)
@@ -324,11 +414,17 @@ class ObligationsScreen(BaseScreen):
         self.open_clause.setEnabled(bool(ev))
         clear_layout(self.notes_box)
         if not notes:
-            self.notes_box.addWidget(label("No notes yet.", "muted"))
+            self.notes_box.addWidget(label("No notes yet. Notes, completions, disputes and exceptions appear here.", "muted", wrap=True))
         for n in notes:
-            self.notes_box.addWidget(StatusBadge(n.kind.value, "info" if n.kind.value == "note" else "warning"))
-            self.notes_box.addWidget(label(n.body, "muted", wrap=True))
-            self.notes_box.addWidget(label(n.created_at.strftime("%d %b %Y %H:%M"), "faint"))
+            tone = "info" if n.kind.value == "note" else "warning"
+            card = AccentCard(tone)
+            head = QHBoxLayout()
+            head.addWidget(StatusBadge(n.kind.value, tone))
+            head.addStretch(1)
+            head.addWidget(label(n.created_at.strftime("%d %b %Y %H:%M"), "faint"))
+            card.body.addLayout(head)
+            card.body.addWidget(label(n.body, "muted", wrap=True, selectable=True))
+            self.notes_box.addWidget(card)
         self.notes_box.addStretch(1)
 
     # ------------------------------------------------------------------ actions

@@ -8,7 +8,7 @@ from typing import Any, Protocol, TypeVar
 from pydantic import BaseModel
 
 from app.config.settings import Settings
-from app.core.errors import AIResponseError, AIUnavailableError, TransientError
+from app.core.errors import QUOTA_MESSAGE, AIResponseError, AIUnavailableError, TransientError, is_quota_exhausted
 from app.core.logging import get_logger
 from app.core.retry import RetryPolicy, retry_call
 
@@ -39,10 +39,13 @@ class UnavailableLLM:
     model = "unavailable"
     available = False
 
+    def __init__(self, reason: str | None = None) -> None:
+        self.reason = reason  # e.g. "out of OpenAI credits"; shown instead of the generic "not configured" text
+
     def structured(self, **_: Any) -> Any:
         raise AIUnavailableError(
             "no llm configured",
-            user_message="AI analysis is not configured. Set OPENAI_API_KEY (or OPENAI_BASE_URL for the Edge Function proxy) in .env and restart.",
+            user_message=self.reason or "AI analysis is not configured. Set OPENAI_API_KEY (or OPENAI_BASE_URL for the Edge Function proxy) in .env and restart.",
         )
 
 
@@ -84,6 +87,8 @@ class OpenAILLM:
     @staticmethod
     def _translate(exc: Exception) -> Exception:
         name = type(exc).__name__
+        if is_quota_exhausted(exc):
+            return AIUnavailableError("openai quota exhausted", user_message=QUOTA_MESSAGE)
         if name in ("RateLimitError", "APIConnectionError", "APITimeoutError", "InternalServerError"):
             return TransientError(f"openai {name}", user_message="The AI service is temporarily unavailable or rate limited.")
         if name in ("AuthenticationError", "PermissionDeniedError"):
@@ -112,6 +117,10 @@ class MeteredLLM:
     def available(self) -> bool:
         return self.inner.available
 
+    @property
+    def offline_rules(self) -> bool:
+        return bool(getattr(self.inner, "offline_rules", False))
+
     def structured(self, *, system: str, user: str, schema: type[T], purpose: str, temperature: float | None = 0.0, max_tokens: int | None = None) -> T:
         started = time.monotonic()
         try:
@@ -132,6 +141,65 @@ class MeteredLLM:
         return sum(c.completion_tokens for c in self.calls)
 
 
+class AnthropicLLM:
+    """Claude via the Anthropic API. Structured output is obtained by forcing a single tool call whose input schema is the Pydantic model."""
+
+    available = True
+
+    def __init__(self, api_key: str, model: str, *, timeout: float = 90.0) -> None:
+        import anthropic
+
+        self._client = anthropic.Anthropic(api_key=api_key, timeout=timeout, max_retries=0)
+        self.model = model
+        self.last_call: LLMCall | None = None
+
+    def structured(self, *, system: str, user: str, schema: type[T], purpose: str, temperature: float | None = 0.0, max_tokens: int | None = None) -> T:
+        def call() -> T:
+            tool = {"name": "respond", "description": "Return the result in exactly the required structure.", "input_schema": schema.model_json_schema()}
+            kwargs: dict[str, Any] = {"model": self.model, "max_tokens": max_tokens or 4096, "system": system, "messages": [{"role": "user", "content": user}],
+                                      "tools": [tool], "tool_choice": {"type": "tool", "name": "respond"}}
+            if temperature is not None:
+                kwargs["temperature"] = temperature
+            started = time.monotonic()
+            try:
+                msg = self._client.messages.create(**kwargs)
+            except Exception as exc:  # noqa: BLE001
+                raise self._translate(exc) from exc
+            if msg.stop_reason == "max_tokens":
+                raise AIResponseError("output truncated", user_message="The AI response was cut off. Try a smaller document section.")
+            block = next((b for b in msg.content if getattr(b, "type", "") == "tool_use"), None)
+            if block is None:
+                raise AIResponseError("no structured output", user_message="The AI returned a response that did not match the required format.")
+            try:
+                parsed = schema.model_validate(block.input)
+            except Exception as exc:  # noqa: BLE001
+                raise AIResponseError(f"schema mismatch: {type(exc).__name__}", user_message="The AI returned a response that did not match the required format.") from exc
+            usage = getattr(msg, "usage", None)
+            self.last_call = LLMCall(purpose, getattr(usage, "input_tokens", 0) or 0, getattr(usage, "output_tokens", 0) or 0, time.monotonic() - started)
+            return parsed
+
+        return retry_call(call, RetryPolicy(max_attempts=3, retry_on=(TransientError,)), label=f"llm:{purpose}")
+
+    @staticmethod
+    def _translate(exc: Exception) -> Exception:
+        name = type(exc).__name__
+        if is_quota_exhausted(exc):
+            return AIUnavailableError("anthropic credits exhausted", user_message="The Anthropic account has no credits left. Add credits in the Anthropic console.")
+        if name in ("RateLimitError", "APIConnectionError", "APITimeoutError", "InternalServerError", "OverloadedError"):
+            return TransientError(f"anthropic {name}", user_message="The AI service is temporarily unavailable or rate limited.")
+        if name in ("AuthenticationError", "PermissionDeniedError"):
+            return AIUnavailableError(f"anthropic {name}", user_message="Anthropic rejected the API key. Check ANTHROPIC_API_KEY.")
+        if name == "NotFoundError":
+            return AIUnavailableError(str(exc), user_message="The configured Claude model was not found. Check ANTHROPIC_MODEL.")
+        return AIResponseError(f"anthropic error {name}", user_message="The AI request failed.")
+
+
+def build_claude_llm(settings: Settings) -> "AnthropicLLM | None":
+    if not settings.claude_configured:
+        return None
+    return AnthropicLLM(settings.anthropic_api_key.get_secret_value(), settings.anthropic_model, timeout=settings.openai_timeout_s)
+
+
 def build_openai_client(settings: Settings, access_token: str | None = None) -> Any | None:
     """Create the OpenAI SDK client. In proxy mode the *user's Supabase JWT* is the credential, so no
     OpenAI key ever exists on the desktop."""
@@ -150,5 +218,5 @@ def build_openai_client(settings: Settings, access_token: str | None = None) -> 
 def build_llm(settings: Settings, access_token: str | None = None) -> LLMClient:
     client = build_openai_client(settings, access_token)
     if client is None:
-        return UnavailableLLM()
+        return build_claude_llm(settings) or UnavailableLLM()
     return OpenAILLM(client, settings.openai_model, timeout=settings.openai_timeout_s)

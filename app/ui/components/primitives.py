@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLab
 
 from app.ui.components.base import label, repolish
 from app.ui.theme import icons
-from app.ui.theme.tokens import SPACE, theme, tone_color
+from app.ui.theme.tokens import SPACE, is_classic, theme, tone_color
 
 
 class GlassPanel(QFrame):
@@ -19,7 +19,12 @@ class GlassPanel(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._accent = accent
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(padding, padding, padding, padding)
+        if is_classic():  # the navy title bar runs edge to edge; the body keeps the requested padding
+            outer.setContentsMargins(3, 3, 3, 3)
+            self._body_pad = max(0, padding - 3)
+        else:
+            outer.setContentsMargins(padding, padding, padding, padding)
+            self._body_pad = 0
         outer.setSpacing(SPACE["md"])
         self._header = QHBoxLayout()
         self._header.setSpacing(SPACE["sm"])
@@ -33,11 +38,14 @@ class GlassPanel(QFrame):
         self._header.addLayout(titles, 1)
         self._header_host = QWidget()
         self._header_host.setLayout(self._header)
+        if is_classic():  # navy title bar across the top of the panel
+            self._header_host.setProperty("panelHeader", True)
+            self._header.setContentsMargins(6, 3, 6, 3)
         self._header_host.setVisible(bool(title))
         outer.addWidget(self._header_host)
         self.body = QVBoxLayout()
         self.body.setSpacing(SPACE["md"])
-        self.body.setContentsMargins(0, 0, 0, 0)
+        self.body.setContentsMargins(self._body_pad, self._body_pad if not is_classic() else self._body_pad // 2, self._body_pad, self._body_pad)
         outer.addLayout(self.body, 1)
 
     def set_title(self, title: str, subtitle: str = "") -> None:
@@ -56,6 +64,8 @@ class GlassPanel(QFrame):
 
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
+        if is_classic():
+            return
         t = theme()
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -113,7 +123,7 @@ class NeonButton(QPushButton):
         if variant == "chip":
             self.setCheckable(True)
         self._glow: QGraphicsDropShadowEffect | None = None
-        if variant == "primary":
+        if variant == "primary" and not is_classic():
             self._glow = QGraphicsDropShadowEffect(self)
             self._glow.setBlurRadius(22)
             self._glow.setOffset(0, 0)
@@ -179,7 +189,7 @@ class MetricCard(GlassPanel):
         self.setAccessibleName(title)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setMinimumHeight(104)
+        self.setMinimumHeight(96 if is_classic() else 104)
         self.set_accent(tone_color(accent))
         row = QHBoxLayout()
         self._icon = QLabel()

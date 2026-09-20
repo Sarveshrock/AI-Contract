@@ -13,6 +13,7 @@ from app.core.errors import ContractLensError
 from app.core.logging import get_logger
 from app.ui.components.base import label
 from app.ui.components.states import StatefulView
+from app.ui.theme.tokens import is_classic
 from app.workers.tasks import TaskRunner
 
 log = get_logger(__name__)
@@ -74,8 +75,15 @@ class BaseScreen(QWidget):
         head.setContentsMargins(0, 0, 0, 0)
         titles = QVBoxLayout()
         titles.setSpacing(2)
-        titles.addWidget(label(self.eyebrow.upper(), "eyebrow"))
-        titles.addWidget(label(self.title, "h1"))
+        if is_classic():
+            # one navy title bar: "Eyebrow - Screen title" with the screen actions on the right
+            self.header.setObjectName("ScreenHeader")
+            self.header.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+            head.setContentsMargins(10, 5, 8, 5)
+            titles.addWidget(label(f"{self.eyebrow} - {self.title}" if self.eyebrow else self.title, "titlebar"))
+        else:
+            titles.addWidget(label(self.eyebrow.upper(), "eyebrow"))
+            titles.addWidget(label(self.title, "h1"))
         head.addLayout(titles, 1)
         self.actions = QHBoxLayout()
         self.actions.setSpacing(8)

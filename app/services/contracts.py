@@ -153,7 +153,7 @@ class ContractService:
             return UploadOutcome(res, None, "Analysis was not requested.")
         if not self._ai_available():
             self._r.contracts.update(res.contract_id, analysis_status=AnalysisStatus.PENDING)
-            return UploadOutcome(res, None, "AI is not configured: the document is searchable, but extraction was not run. Set OPENAI_API_KEY to analyse it.")
+            return UploadOutcome(res, None, "AI is unavailable (not configured, or the OpenAI account is out of credits): the document is searchable, but extraction was not run.")
         if on_progress:
             on_progress("analyze", 0.0, "Running agent analysis")
         try:

@@ -287,11 +287,9 @@ class AdministrationScreen(BaseScreen):
             self._do(lambda: self.ctx.ws.reindex_all(), "Search index rebuilt.")
 
     def _analyze_pending(self) -> None:
-        if not self.ctx.ws.llm.available:
-            self.ctx.toast("AI is not configured; nothing can be analysed.", "warning")
-            return
-        self.ctx.toast("Analysis started…", "info")
-        self.ctx.run(lambda: self.ctx.ws.contracts.analyze_pending(), lambda outs: (self.ctx.toast(f"Analysed {len(outs)} contract(s).", "success"), self.ctx.invalidate_all()), name="analysis pending")
+        from app.ui.pending_analysis import run_pending_analysis
+
+        run_pending_analysis(self.ctx)
 
     def _demo(self) -> None:
         from app.ui.demo_actions import load_demo_data

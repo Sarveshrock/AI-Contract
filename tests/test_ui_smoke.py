@@ -185,3 +185,66 @@ def test_login_dialog_local_mode_and_error_display(qapp, store, tmp_path, errors
     dlg2._sign_in()  # noqa: SLF001
     assert not dlg2.principals and "Incorrect" in dlg2.error.text() and dlg2.btn.isEnabled()
     assert errors == []
+
+
+def test_obligation_kpi_tiles_filter_and_detail_panel(window, errors):
+    window.navigate("obligations")
+    settle(window)
+    scr = window.ctx.screens["obligations"]
+    assert scr._kpis["open"]._value.text().isdigit()  # noqa: SLF001
+    scr._kpis["overdue"].clicked.emit()  # noqa: SLF001
+    assert scr._view == "overdue"  # noqa: SLF001
+    scr._kpis["overdue"].clicked.emit()  # noqa: SLF001 - clicking the active tile clears the filter
+    assert scr._view == "all"  # noqa: SLF001
+    assert scr.detail_stack.currentIndex() == 0
+    scr.table.select_row(0)
+    settle(window)
+    assert scr.detail_stack.currentIndex() == 1 and scr.d_name.text()
+    assert errors == [], "\n".join(errors[:2])
+
+
+def test_copilot_hero_hides_on_first_question_and_new_chat_restores_it(window, errors):
+    window.navigate("copilot")
+    settle(window)
+    scr = window.ctx.screens["copilot"]
+    assert scr.chat.indexOf(scr.hero) >= 0
+    scr._ask("Which contracts expire in the next 90 days?")  # noqa: SLF001
+    settle(window)
+    assert scr.chat.indexOf(scr.hero) < 0
+    scr._reset()  # noqa: SLF001
+    assert scr.chat.indexOf(scr.hero) >= 0 and scr.hero.isVisibleTo(scr)
+    assert errors == [], "\n".join(errors[:2])
+
+
+def test_contract_workspace_ask_tab_shows_chat_answer(window, errors):
+    window.navigate("contracts")
+    settle(window)
+    scr = window.ctx.screens["contracts"]
+    window.open_contract(scr._all[0].contract.id, tab="ask")  # noqa: SLF001
+    settle(window)
+    scr._ask("Which clauses mention service credits?")  # noqa: SLF001
+    settle(window)
+    from PyQt6.QtWidgets import QLabel
+
+    texts = " ".join(w.text() for w in scr.ask_scroll.findChildren(QLabel))
+    assert "Service Credits" in texts
+    assert scr.ask_intro.isHidden()
+    assert errors == [], "\n".join(errors[:2])
+
+
+def test_theme_switch_between_classic_and_modern_rebuilds_the_window(window, errors):
+    from app.ui.theme.tokens import is_classic
+
+    assert is_classic()  # the classic Windows 9x look is the default
+    window.navigate("obligations")
+    settle(window)
+    window.act_classic.setChecked(False)
+    settle(window)
+    assert not is_classic() and window.menuBar().actions()
+    window.navigate("command")
+    settle(window)
+    assert window.ctx.screens["command"].view.currentWidget() is window.ctx.screens["command"].view.content
+    window.act_classic.setChecked(True)
+    settle(window)
+    assert is_classic()
+    assert errors == [], "\n".join(errors[:2])

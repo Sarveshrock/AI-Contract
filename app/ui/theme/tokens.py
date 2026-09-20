@@ -32,6 +32,7 @@ class Theme:
     danger: str = "#F4718A"
     info: str = "#60A5FA"
     focus: str = "#22D3EE"
+    style: str = "modern"       # "modern" (dark glass) or "classic" (silver Windows 9x look)
 
     def qcolor(self, token: str, alpha: float = 1.0) -> QColor:
         c = QColor(getattr(self, token, token))
@@ -43,6 +44,12 @@ DARK = Theme("dark")
 HIGH_CONTRAST = replace(
     DARK, name="high-contrast", bg0="#000000", bg1="#05070C", bg2="#090D16", panel="#0B1120", panel_hi="#131C31", border="#4C5F8F", border_hi="#8CA0D4",
     text="#FFFFFF", text_dim="#DCE4F7", text_faint="#B7C3E0", cyan="#5EEAFF", violet="#B6ABFF", success="#5CF0BB", warning="#FFD166", danger="#FF8FA3",
+)
+
+CLASSIC = Theme(
+    "classic", bg0="#C0C0C0", bg1="#FFFFFF", bg2="#DCDCDC", panel="#C0C0C0", panel_hi="#D8D8D8", border="#808080", border_hi="#404040",
+    text="#000000", text_dim="#1A1A1A", text_faint="#404040", cyan="#0A24A8", cyan_dim="#000080", violet="#6A2CC8", indigo="#000080",
+    success="#008A00", warning="#B37A00", danger="#C80000", info="#0A3CC8", focus="#000080", style="classic",
 )
 
 # spacing (px), radii, type scale
@@ -57,6 +64,15 @@ _current: Theme = DARK
 
 def theme() -> Theme:
     return _current
+
+
+def is_classic() -> bool:
+    return _current.style == "classic"
+
+
+def radius(px: int) -> int:
+    """Corner radius that collapses to square corners in the classic theme."""
+    return 0 if _current.style == "classic" else px
 
 
 def set_theme(t: Theme) -> None:

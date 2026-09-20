@@ -110,7 +110,7 @@ class GroundedCopilotAgent(Agent):
     # ------------------------------------------------------------------ routing
     def route(self, ctx: AgentContext, question: str) -> RoutedIntent:
         base = heuristic_intent(question)
-        if not ctx.llm.available:
+        if not ctx.llm.available or getattr(ctx.llm, "offline_rules", False):
             return base
         try:
             self.need(ctx, Capability.LLM_STRUCTURED)
@@ -139,7 +139,7 @@ class GroundedCopilotAgent(Agent):
                                      text=c.text, page_number=c.page_number or 0, section_reference=c.section_reference, section_title=c.section_title,
                                      clause_type="other", char_start=0, char_end=len(c.text)) for i, c in enumerate(citations)}
         by_label = {c.label: c for c in citations}
-        if not ctx.llm.available:
+        if not ctx.llm.available or getattr(ctx.llm, "offline_rules", False):
             return CopilotAnswer(question, intent, "AI answer generation is not configured, so no answer was written. The most relevant passages are shown below.",
                                  [self._source(c, c.text[:500], True) for c in citations[:4]], "Passages were found by search only and have not been interpreted.", False, "extractive")
         self.need(ctx, Capability.LLM_STRUCTURED)

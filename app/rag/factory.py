@@ -34,6 +34,11 @@ print("ok")
 """
 
 
+def run_probe() -> None:
+    """Executed in a child process (see probe_embedded_chroma). A native crash here must not take the app down."""
+    exec(compile(_PROBE, "<chroma-probe>", "exec"), {"__name__": "__chroma_probe__"})  # noqa: S102 - fixed, local script
+
+
 def chroma_version() -> str | None:
     try:
         import importlib.metadata as md
@@ -57,8 +62,11 @@ def probe_embedded_chroma(cache_file: Path, *, timeout: float = 90.0, force: boo
         except (OSError, ValueError, KeyError):
             pass
     try:
-        proc = subprocess.run([sys.executable, "-c", _PROBE], capture_output=True, text=True, timeout=timeout, cwd=tempfile.gettempdir())
-        ok = proc.returncode == 0 and "ok" in proc.stdout
+        # An installed (frozen) build cannot run "python -c": it re-launches itself with a flag that main() handles first.
+        cmd = [sys.executable, "--chroma-probe"] if getattr(sys, "frozen", False) else [sys.executable, "-c", _PROBE]
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, cwd=tempfile.gettempdir())
+        # a windowed (frozen) exe has no stdout to read; there the exit code alone is the verdict (the script asserts before exiting)
+        ok = proc.returncode == 0 and ("ok" in proc.stdout or bool(getattr(sys, "frozen", False)))
         detail = "self-test passed" if ok else f"self-test failed (exit code {proc.returncode})"
     except subprocess.TimeoutExpired:
         ok, detail = False, "self-test timed out"

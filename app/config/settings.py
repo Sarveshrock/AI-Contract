@@ -3,6 +3,9 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import shutil
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -12,16 +15,37 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.errors import ConfigurationError
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]  # bundled, read-only resources (migrations, samples) live here
+FROZEN = bool(getattr(sys, "frozen", False))
+
+
+def _app_home() -> Path:
+    """Where the user's settings and data live. Installed builds must not write into the (read-only) install folder."""
+    if FROZEN:
+        return Path(os.environ.get("APPDATA") or Path.home()) / "ContractLens"
+    return PROJECT_ROOT
+
+
+APP_HOME = _app_home()
+
+
+def ensure_app_home() -> Path:
+    """First run of an installed build: create the folder and a starter .env from the bundled example. Never overwrites."""
+    if FROZEN:
+        APP_HOME.mkdir(parents=True, exist_ok=True)
+        env, example = APP_HOME / ".env", PROJECT_ROOT / ".env.example"
+        if not env.exists() and example.exists():
+            shutil.copyfile(example, env)
+    return APP_HOME
 
 
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=str(PROJECT_ROOT / ".env"), env_file_encoding="utf-8", extra="ignore", case_sensitive=False)
+    model_config = SettingsConfigDict(env_file=str(APP_HOME / ".env"), env_file_encoding="utf-8", extra="ignore", case_sensitive=False)
 
     # --- runtime -------------------------------------------------------------------------
     contractlens_mode: Literal["auto", "supabase", "local"] = "auto"
     log_level: str = "INFO"
-    data_dir: Path = PROJECT_ROOT / "data"
+    data_dir: Path = APP_HOME / "data"
     reduced_motion: bool = False
 
     # --- Supabase (anon key only; service-role keys are refused) -------------------------
@@ -36,7 +60,15 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o"
     openai_embedding_model: str = "text-embedding-3-small"
     openai_timeout_s: float = 90.0
-    embedding_provider: Literal["auto", "openai", "hashing"] = "auto"
+    #: Optional alternative chat/analysis model. Used when OpenAI is not configured or its balance is empty.
+    anthropic_api_key: SecretStr | None = None
+    anthropic_model: str = "claude-sonnet-5"
+    #: Optional Google Gemini for chat/analysis and (when OpenAI is unavailable) embeddings. Has a free tier.
+    gemini_api_key: SecretStr | None = None
+    gemini_model: str = "gemini-flash-latest"
+    gemini_embedding_model: str = "gemini-embedding-001"
+    gemini_embedding_dim: int = 768
+    embedding_provider: Literal["auto", "openai", "gemini", "hashing"] = "auto"
 
     # --- ChromaDB -------------------------------------------------------------------------
     chroma_mode: Literal["persistent", "http", "memory"] = "persistent"
@@ -87,6 +119,14 @@ class Settings(BaseSettings):
     @property
     def is_demo(self) -> bool:
         return self.mode == "local"
+
+    @property
+    def gemini_configured(self) -> bool:
+        return bool(self.gemini_api_key and self.gemini_api_key.get_secret_value())
+
+    @property
+    def claude_configured(self) -> bool:
+        return bool(self.anthropic_api_key and self.anthropic_api_key.get_secret_value())
 
     @property
     def ai_configured(self) -> bool:

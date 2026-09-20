@@ -5,7 +5,7 @@ import hashlib
 import math
 from typing import Any, Protocol
 
-from app.core.errors import AIUnavailableError, TransientError
+from app.core.errors import QUOTA_MESSAGE, AIUnavailableError, TransientError, is_quota_exhausted
 from app.core.logging import get_logger
 from app.core.retry import retry_call
 from app.rag.text_utils import tokenize
@@ -79,6 +79,8 @@ class OpenAIEmbedder:
             return [list(d.embedding) for d in res.data]
         except Exception as exc:  # noqa: BLE001
             name = type(exc).__name__
+            if is_quota_exhausted(exc):
+                raise AIUnavailableError("openai quota exhausted", user_message=QUOTA_MESSAGE) from exc
             if name in ("RateLimitError", "APIConnectionError", "APITimeoutError", "InternalServerError"):
                 raise TransientError(f"embeddings: {name}", user_message="The embedding service is temporarily unavailable.") from exc
             if name == "AuthenticationError":

@@ -5,22 +5,28 @@ import sys
 
 
 def main() -> int:
+    if "--chroma-probe" in sys.argv:  # self-test child process for the installed build; must run before anything else loads
+        from app.rag.factory import run_probe
+
+        run_probe()
+        return 0
     from PyQt6.QtCore import QSettings
     from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
 
     from app import APP_NAME
-    from app.config.settings import get_settings
+    from app.config.settings import ensure_app_home, get_settings
     from app.core.container import AppContainer
     from app.core.errors import ContractLensError
     from app.ui.login import LoginDialog
     from app.ui.main_window import MainWindow, apply_theme
     from app.ui.theme.motion import Motion
 
+    ensure_app_home()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("ContractLens")
     qsettings = QSettings("ContractLens", "Enterprise")
-    apply_theme(app, qsettings.value("high_contrast", False, type=bool))
+    apply_theme(app, qsettings.value("high_contrast", False, type=bool), str(qsettings.value("theme_style", "classic")))
     try:
         settings = get_settings()
         Motion.set_reduced(qsettings.value("reduced_motion", settings.reduced_motion, type=bool))

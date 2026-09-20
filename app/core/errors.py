@@ -94,3 +94,12 @@ class ConfirmationRequired(ContractLensError):
 
 class WorkflowError(ContractLensError):
     code = "workflow"
+
+
+QUOTA_MESSAGE = "Your OpenAI account has no credits left (quota exceeded). Add credits at platform.openai.com/settings/organization/billing, or clear OPENAI_API_KEY to use offline mode."
+
+
+def is_quota_exhausted(exc: BaseException) -> bool:
+    """OpenAI reports an empty balance as HTTP 429 'insufficient_quota'. Retrying can never fix it, unlike a real rate limit."""
+    text = f"{getattr(exc, 'code', '')} {getattr(exc, 'body', '')} {exc}".lower()
+    return any(marker in text for marker in ("insufficient_quota", "credit_balance_exhausted", "no credits remaining", "credit balance is too low"))

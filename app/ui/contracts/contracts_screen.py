@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QTextCharFormat, QTextCursor, QTextDocument
 from PyQt6.QtWidgets import (
     QComboBox,
+    QGridLayout,
     QFileDialog,
     QHBoxLayout,
     QProgressBar,
@@ -28,12 +29,16 @@ from app.core.errors import DuplicateDocumentError
 from app.models.enums import ContractStatus, DocumentRole, SubjectType
 from app.services.contracts import ContractSummary, ContractTwin
 from app.ui.components.base import clear_layout, elide, fmt_date, label
-from app.ui.components.cards import ContractCard, ObligationCard
+from app.ui.components.cards import ContractCard, ObligationCard, score_tone
+from app.ui.components.chat import ChatMessage, fill_answer, make_composer, make_follower, typing_indicator
 from app.ui.components.data_table import Column, DataTable
 from app.ui.components.dialogs import ConfirmationDialog
 from app.ui.components.evidence_panel import EvidencePanel, EvidenceVM
+from app.ui.components.polish import AccentCard, FactTile, ScoreRing
 from app.ui.components.primitives import GlassPanel, NeonButton, SearchBar, StatusBadge
 from app.ui.context import BaseScreen
+from app.ui.pending_analysis import run_pending_analysis
+from app.ui.theme import icons
 from app.ui.theme.tokens import SPACE, severity_tone, status_tone, theme
 
 ROLE_CHOICES = [("Amendment", DocumentRole.AMENDMENT), ("Addendum", DocumentRole.ADDENDUM), ("Schedule / exhibit", DocumentRole.SCHEDULE), ("Revised / restated version", DocumentRole.REVISED)]
@@ -59,6 +64,10 @@ class ContractsScreen(BaseScreen):
         self.setAcceptDrops(True)
         self.stack.addWidget(self._build_list())
         self.stack.addWidget(self._build_workspace())
+        pend = NeonButton("Analyse pending", "default", "play")
+        pend.setToolTip("Analyse every contract that has been uploaded but not analysed yet")
+        pend.clicked.connect(lambda: run_pending_analysis(self.ctx))
+        self.actions.addWidget(pend)
         up = NeonButton("Upload contract", "primary", "upload")
         up.clicked.connect(self.pick_files)
         self.actions.addWidget(up)
@@ -215,21 +224,45 @@ class ContractsScreen(BaseScreen):
         top.addLayout(self.ws_badges)
         self.btn_approve = NeonButton("Approve analysis", "success", "check")
         self.btn_approve.clicked.connect(self._approve)
-        self.btn_version = NeonButton("Add version…", "default", "layers")
+        self.btn_version = NeonButton("Version", "default", "layers")
+        self.btn_version.setToolTip("Add a new version, amendment, addendum or schedule")
         self.btn_version.clicked.connect(self._add_version)
         self.btn_rerun = NeonButton("Re-run", "default", "refresh")
         self.btn_rerun.setToolTip("Re-run the agent analysis on the current version")
         self.btn_rerun.clicked.connect(self._rerun)
-        self.btn_delete = NeonButton("Delete", "danger", "trash")
+        self.btn_delete = NeonButton("", "danger", "trash")
+        self.btn_delete.setToolTip("Delete contract")
+        self.btn_delete.setAccessibleName("Delete contract")
         self.btn_delete.clicked.connect(self._delete)
-        for b in (self.btn_approve, self.btn_version, self.btn_rerun, self.btn_delete):
+        self.btn_meta = NeonButton("Overview", "default", "chevron_down")
+        self.btn_meta.setCheckable(True)
+        self.btn_meta.setToolTip("Show or hide the contract overview (key terms and scores). Collapsed by default on small screens to give the document more room.")
+        self.btn_meta.toggled.connect(self._toggle_meta)
+        for b in (self.btn_approve, self.btn_meta, self.btn_version, self.btn_rerun, self.btn_delete):
             top.addWidget(b)
         lay.addLayout(top)
 
-        self.meta_panel = GlassPanel("Contract metadata")
-        self.meta_grid = QVBoxLayout()
-        self.meta_panel.body.addLayout(self.meta_grid)
-        self.meta_panel.setMinimumHeight(170)
+        self.meta_panel = GlassPanel(padding=SPACE["md"])
+        meta_row = QHBoxLayout()
+        meta_row.setSpacing(SPACE["lg"])
+        self.meta_grid = QGridLayout()
+        self.meta_grid.setHorizontalSpacing(SPACE["sm"])
+        self.meta_grid.setVerticalSpacing(SPACE["sm"])
+        meta_row.addLayout(self.meta_grid, 1)
+        self.ring_risk, self.ring_unc = ScoreRing(size=66), ScoreRing(size=66)
+        rings = QHBoxLayout()
+        rings.setSpacing(SPACE["md"])
+        for ring, cap in ((self.ring_risk, "Review score"), (self.ring_unc, "Uncertainty")):
+            col = QVBoxLayout()
+            col.setSpacing(2)
+            col.addWidget(ring, 0, Qt.AlignmentFlag.AlignHCenter)
+            col.addWidget(label(cap, "faint", align=Qt.AlignmentFlag.AlignHCenter))
+            rings.addLayout(col)
+        meta_row.addLayout(rings)
+        self.meta_panel.body.addLayout(meta_row)
+        self.meta_missing = label("", "faint", wrap=True)
+        self.meta_panel.body.addWidget(self.meta_missing)
+        self.meta_panel.setMinimumHeight(206)
         vsplit = QSplitter(Qt.Orientation.Vertical)
         vsplit.setChildrenCollapsible(False)
         vsplit.addWidget(self.meta_panel)
@@ -279,6 +312,7 @@ class ContractsScreen(BaseScreen):
         self.tabs = QTabWidget()
         self.tabs.tabBar().setUsesScrollButtons(False)
         self.tabs.tabBar().setExpanding(True)
+        self.tabs.tabBar().setStyleSheet("QTabBar::tab { padding: 9px 6px; }")
         self.tabs.tabBar().setElideMode(Qt.TextElideMode.ElideNone)
         self.tab_insights, self.tab_obl, self.tab_dl, self.tab_ver, self.tab_ask = (QWidget() for _ in range(5))
         for w, name in ((self.tab_insights, "AI insights"), (self.tab_obl, "Obligations"), (self.tab_dl, "Deadlines"), (self.tab_ver, "Versions"), (self.tab_ask, "Ask")):
@@ -311,22 +345,34 @@ class ContractsScreen(BaseScreen):
         ver_scroll.setWidget(self.ver_host)
         QVBoxLayout(self.tab_ver).addWidget(ver_scroll)
         ask_lay = QVBoxLayout(self.tab_ask)
-        self.ask_box = SearchBar("Ask a question about this contract…")
-        self.ask_box.setProperty("search", True)
-        self.ask_box.submitted.connect(self._ask)
-        self.ask_out = QPlainTextEdit()
-        self.ask_out.setReadOnly(True)
-        ask_lay.addWidget(self.ask_box)
-        ask_lay.addWidget(self.ask_out, 1)
+        ask_lay.setSpacing(SPACE["sm"])
+        self.ask_scroll = QScrollArea()
+        self.ask_scroll.setWidgetResizable(True)
+        self.ask_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        ask_host = QWidget()
+        self.ask_chat = QVBoxLayout(ask_host)
+        self.ask_chat.setContentsMargins(0, 4, 8, 4)
+        self.ask_chat.setSpacing(SPACE["md"])
+        self.ask_intro = label("Ask anything about this contract. Answers cite the passages they come from, and anything the text does not support is withheld.", "muted", wrap=True)
+        self.ask_chat.addWidget(self.ask_intro)
+        self.ask_chat.addStretch(1)
+        self.ask_scroll.setWidget(ask_host)
+        self._ask_follow = make_follower(self.ask_scroll)
+        self._ask_cid: UUID | None = None
+        composer, self.ask_box = make_composer("Ask a question about this contract…", self._ask)
+        ask_lay.addWidget(self.ask_scroll, 1)
+        ask_lay.addWidget(composer)
         self.evidence = EvidencePanel("Source evidence")
         self.evidence.openRequested.connect(self._open_source)
         ev_panel = GlassPanel()
         ev_panel.body.addWidget(self.evidence)
-        ins_panel = GlassPanel("AI insights")
+        ins_panel = GlassPanel(padding=SPACE["md"])
         ins_panel.body.addWidget(self.tabs)
         right.addWidget(ins_panel)
         right.addWidget(ev_panel)
-        right.setSizes([520, 300])
+        right.setSizes([620, 170])
+        right.setStretchFactor(0, 4)
+        right.setStretchFactor(1, 1)
         split.addWidget(clause_panel)
         split.addWidget(viewer)
         split.addWidget(right)
@@ -339,9 +385,33 @@ class ContractsScreen(BaseScreen):
         vsplit.addWidget(split)
         vsplit.setStretchFactor(0, 0)
         vsplit.setStretchFactor(1, 1)
-        vsplit.setSizes([185, 480])
+        vsplit.setSizes([238, 434])
         lay.addWidget(vsplit, 1)
         return page
+
+    def _toggle_meta(self, on: bool) -> None:
+        self.meta_panel.setVisible(on)
+        self.btn_meta.setIcon(icons.icon("chevron_down" if not on else "chevron_up", theme().text_dim, 16))
+        try:
+            self.ctx.settings.setValue("contracts/overview_open", on)
+        except Exception:  # noqa: BLE001 - a settings failure must never block the UI
+            pass
+
+    def _init_meta_visibility(self) -> None:
+        """Default: open on tall screens, collapsed on small ones. A remembered choice wins."""
+        saved = self.ctx.settings.value("contracts/overview_open", None)
+        if saved is None:
+            from PyQt6.QtGui import QGuiApplication
+
+            scr = QGuiApplication.primaryScreen()
+            on = bool(scr and scr.availableGeometry().height() >= 900) and self.window().height() >= 860
+        else:
+            on = str(saved).lower() in ("true", "1")
+        self.btn_meta.blockSignals(True)
+        self.btn_meta.setChecked(on)
+        self.btn_meta.blockSignals(False)
+        self.meta_panel.setVisible(on)
+        self.btn_meta.setIcon(icons.icon("chevron_up" if on else "chevron_down", theme().text_dim, 16))
 
     def _back(self) -> None:
         self.header.setVisible(True)
@@ -372,6 +442,9 @@ class ContractsScreen(BaseScreen):
         twin, ver_id, pages = res
         self._twin, self._pages, self._version_id = twin, pages, ver_id
         self._stale = False
+        if not getattr(self, "_meta_init", False):
+            self._meta_init = True
+            self._init_meta_visibility()
         c = twin.contract
         self.ws_title.setText(elide(c.title, 70))
         self.ws_title.setToolTip(c.title)
@@ -402,6 +475,12 @@ class ContractsScreen(BaseScreen):
             names = {"insights": 0, "obligations": 1, "deadlines": 2, "versions": 3, "ask": 4}
             self.tabs.setCurrentIndex(names.get(tab, 0))
         self.evidence.clear()
+        if self._ask_cid != c.id:
+            self._ask_cid = c.id
+            while self.ask_chat.count() > 2:  # keep the intro and the trailing stretch
+                item = self.ask_chat.takeAt(1)
+                if item.widget():
+                    item.widget().deleteLater()
 
     # -- metadata & panels ------------------------------------------------------------------
     def _fill_meta(self, twin: ContractTwin) -> None:
@@ -416,27 +495,26 @@ class ContractsScreen(BaseScreen):
                   (f" · {c.renewal_term_months}-month terms" if c.renewal_term_months else "") + (f" · {c.renewal_notice_days} days' notice" if c.renewal_notice_days else "")
         term_cl = clauses.get("termination")
         rows = [
-            ("Parties", parties), ("Effective date", fmt_date(c.effective_date)), ("Expiration date", fmt_date(c.expiration_date) + ("" if c.expiration_date else " (not established)")),
-            ("Renewal", renewal), ("Payment terms", c.payment_terms or "Not found"), ("Termination", term_cl.summary if term_cl and term_cl.summary else "Not found"),
-            ("Service levels", snap.get("sla_summary") or "Not found"), ("Confidentiality", (clauses.get("confidentiality").summary if clauses.get("confidentiality") else None) or "Not found"),
-            ("Liability / indemnity", "; ".join(x.summary for k in ("liability", "indemnity") if (x := clauses.get(k)) and x.summary) or "Not found"),
-            ("Governing law", c.governing_law or "Not found"),
+            ("Parties", parties, "user", "violet"), ("Effective date", fmt_date(c.effective_date), "calendar", "cyan"),
+            ("Expiration date", fmt_date(c.expiration_date) + ("" if c.expiration_date else " (not established)"), "clock", "warning"),
+            ("Renewal", renewal, "refresh", "info"), ("Payment terms", c.payment_terms or "Not found", "db", "success"),
+            ("Termination", term_cl.summary if term_cl and term_cl.summary else "Not found", "flag", "danger"),
+            ("Service levels", snap.get("sla_summary") or "Not found", "runs", "success"),
+            ("Confidentiality", (clauses.get("confidentiality").summary if clauses.get("confidentiality") else None) or "Not found", "lock", "violet"),
+            ("Liability / indemnity", "; ".join(x.summary for k in ("liability", "indemnity") if (x := clauses.get(k)) and x.summary) or "Not found", "risk", "warning"),
+            ("Governing law", c.governing_law or "Not found", "quote", "info"),
         ]
+        for i, (k, v, ic, tone) in enumerate(rows):
+            self.meta_grid.addWidget(FactTile(k, elide(v, 30), ic, tone, dim=v.startswith("Not "), tooltip=v), i // 5, i % 5)
+            self.meta_grid.setColumnStretch(i % 5, 1)
+        self.ring_risk.set_value(c.business_risk_score, score_tone(c.business_risk_score))
+        self.ring_unc.set_value(c.extraction_uncertainty_score, score_tone(c.extraction_uncertainty_score))
+        self.ring_risk.setToolTip("Business review score: a review-priority aid, not a legal conclusion.")
+        self.ring_unc.setToolTip("Extraction uncertainty: how much of the analysis needs a human to check.")
         missing = [f.title for f in twin.findings if f.finding_type.value == "missing_information" and f.status.value == "open"]
         missing += list(snap.get("missing_information", []))
-        row1, row2 = QHBoxLayout(), QHBoxLayout()
-        for i, (k, v) in enumerate(rows):
-            cell = QVBoxLayout()
-            cell.setSpacing(0)
-            cell.addWidget(label(k.upper(), "faint"))
-            val = label(elide(v, 34), "muted" if "Not " in v[:4] else None)
-            val.setToolTip(v)
-            cell.addWidget(val)
-            (row1 if i < 5 else row2).addLayout(cell, 1)
-        self.meta_grid.addLayout(row1)
-        self.meta_grid.addLayout(row2)
-        if missing:
-            self.meta_grid.addWidget(label("Missing or unresolved: " + "; ".join(dict.fromkeys(missing))[:300], "faint", wrap=True))
+        self.meta_missing.setText("Missing or unresolved: " + "; ".join(dict.fromkeys(missing))[:300] if missing else "")
+        self.meta_missing.setVisible(bool(missing))
 
     def _fill_clauses(self, twin: ContractTwin) -> None:
         self.clause_tree.clear()
@@ -471,26 +549,44 @@ class ContractsScreen(BaseScreen):
 
     def _fill_insights(self, twin: ContractTwin) -> None:
         clear_layout(self.insights_lay)
+        self.insights_lay.setSpacing(SPACE["sm"] + 2)
         c = twin.contract
         if c.summary:
-            self.insights_lay.addWidget(label(c.summary, "muted", wrap=True))
-        self.insights_lay.addWidget(label("REVIEW SIGNALS", "faint"))
+            card = AccentCard("cyan")
+            card.body.addWidget(label("AI SUMMARY", "faint"))
+            card.body.addWidget(label(c.summary, "muted", wrap=True, selectable=True))
+            self.insights_lay.addWidget(card)
         active = [f for f in twin.findings if f.status.value in ("open", "acknowledged")]
+        head = QHBoxLayout()
+        head.addWidget(label("REVIEW SIGNALS", "faint"))
+        head.addStretch(1)
+        head.addWidget(StatusBadge(f"{len(active)} open" if active else "all clear", "warning" if active else "success"))
+        self.insights_lay.addLayout(head)
         if not active:
-            self.insights_lay.addWidget(label("No open review signals. AI signals are prompts for human review, not legal conclusions.", "muted", wrap=True))
+            card = AccentCard("success")
+            card.body.addWidget(label("No open review signals. AI signals are prompts for human review, not legal conclusions.", "muted", wrap=True))
+            self.insights_lay.addWidget(card)
         for f in sorted(active, key=lambda f: -f.weight)[:14]:
-            row = QHBoxLayout()
-            row.addWidget(StatusBadge(f.severity.value, severity_tone(f.severity.value)))
-            row.addWidget(StatusBadge("uncertainty" if f.signal_category.value == "extraction_uncertainty" else "risk", "violet" if f.signal_category.value == "extraction_uncertainty" else "warning"))
-            t = label(elide(f.title, 60), None, wrap=True)
-            t.setToolTip(f.description)
-            row.addWidget(t, 1)
+            tone = severity_tone(f.severity.value)
+            card = AccentCard(tone)
+            top = QHBoxLayout()
+            top.setSpacing(6)
+            top.addWidget(StatusBadge(f.severity.value, tone))
+            uncertain = f.signal_category.value == "extraction_uncertainty"
+            top.addWidget(StatusBadge("uncertainty" if uncertain else "risk", "violet" if uncertain else "warning"))
+            top.addStretch(1)
             if any(True for _ in twin.evidence(SubjectType.FINDING, f.id)):
                 b = NeonButton("Evidence", "ghost", "quote")
                 b.clicked.connect(lambda _=False, fid=f.id: self.evidence.set_evidence([EvidenceVM.from_row(e, twin.contract.title, "review signal") for e in twin.evidence(SubjectType.FINDING, fid)]))
-                row.addWidget(b)
-            self.insights_lay.addLayout(row)
-        self.insights_lay.addWidget(label(f"Business review score {c.business_risk_score or 0:.0f}/100 · extraction uncertainty {c.extraction_uncertainty_score or 0:.0f}/100", "faint"))
+                top.addWidget(b)
+            card.body.addLayout(top)
+            title = label(elide(f.title, 110), None, wrap=True)
+            title.setStyleSheet("font-weight: 600; background: transparent;")
+            title.setToolTip(f.description)
+            card.body.addWidget(title)
+            if f.description:
+                card.body.addWidget(label(elide(f.description, 190), "faint", wrap=True))
+            self.insights_lay.addWidget(card)
         self.insights_lay.addStretch(1)
 
     def _fill_obligations(self, twin: ContractTwin) -> None:
@@ -610,21 +706,34 @@ class ContractsScreen(BaseScreen):
 
     # -- actions -----------------------------------------------------------------------------
     def _ask(self, q: str) -> None:
+        q = (q or "").strip()
         if not q or self._selected is None:
             return
+        self.ask_box.clear()
+        self.ask_intro.setVisible(False)
+        user = ChatMessage(user=True, name=getattr(getattr(self.ctx.ws, "principal", None), "display_name", None) or "You")
+        user.set_user_text(q)
+        self.ask_chat.insertWidget(self.ask_chat.count() - 1, user)
+        reply = ChatMessage(user=False, name="Copilot")
+        self.ask_chat.insertWidget(self.ask_chat.count() - 1, reply)
+        self._ask_follow()
         cp = self.ctx.ws.copilot
         if cp is None:
-            self.ask_out.setPlainText(self.ctx.ws.index_error or "Search index unavailable.")
+            reply.lay.addWidget(label(self.ctx.ws.index_error or "The search index is unavailable.", "muted", wrap=True))
             return
-        self.ask_out.setPlainText("Thinking…")
+        reply.lay.addWidget(typing_indicator("Reading this contract"))
         cid = self._selected
 
-        def show(ans):
-            text = ans.answer + ("\n\nUncertainty: " + ans.uncertainty if ans.uncertainty else "")
-            text += "".join(f"\n\n[{s.label}] {s.contract_title} · §{s.section_reference or '-'} · p.{s.page_number}\n“{s.excerpt[:280]}”" for s in ans.sources[:5])
-            self.ask_out.setPlainText(text)
+        def show(ans, r=reply):
+            fill_answer(r, ans, self._ask_source, max_sources=3)
+            self._ask_follow()
 
-        self.ctx.run(lambda: cp.ask(q, contract_id=cid), show, name="analysis question")
+        self.ctx.run(lambda: cp.ask(q, contract_id=cid), show, name="analysis question",
+                     on_error=lambda e, r=reply: (r.reset_content(), r.lay.addWidget(label("That question could not be answered. Try again in a moment.", "muted", wrap=True)), self.ctx.error(e)))
+
+    def _ask_source(self, s) -> None:
+        self._highlight = s.excerpt[:120]
+        self._goto(next((i for i, (n, _t) in enumerate(self._pages) if n == s.page_number), self._page_idx))
 
     def _approve(self) -> None:
         if self._selected and ConfirmationDialog.ask(self, "Approve analysis", "You confirm that you reviewed the extracted terms, obligations and deadlines for this contract. It will become Active. Individual items keep their own review state.",
@@ -641,7 +750,7 @@ class ContractsScreen(BaseScreen):
         if not self._selected or not self._twin:
             return
         if not self.ctx.ws.llm.available:
-            self.ctx.toast("AI is not configured. Set OPENAI_API_KEY in .env to run analysis.", "warning")
+            self.ctx.toast(getattr(self.ctx.ws, "offline_reason", None) or "AI is not configured. Set OPENAI_API_KEY in .env to run analysis.", "warning")
             return
         cid, vid = self._selected, self._twin.contract.current_version_id
         self.ctx.toast("Analysis started. Agents are working…", "info")

@@ -7,9 +7,11 @@ from typing import Any
 from uuid import UUID
 
 from app.agents.llm import LLMClient, UnavailableLLM, build_llm, build_openai_client
+from app.agents.offline_llm import RuleBasedLLM
+from app.agents.providers import select_providers
 from app.config.risk import load_risk_config
 from app.config.settings import Settings, get_settings
-from app.core.errors import IndexMismatchError
+from app.core.errors import QUOTA_MESSAGE, IndexMismatchError, is_quota_exhausted
 from app.core.logging import configure_logging, get_logger
 from app.database.auditing import AuditingStore
 from app.database.sqlite_store import SqliteTableStore
@@ -56,6 +58,7 @@ class SystemInfo:
     ocr_available: bool
     index_error: str | None = None
     extras: dict[str, Any] = field(default_factory=dict)
+    model_note: str | None = None
 
 
 class AppContainer:
@@ -114,6 +117,22 @@ class WorkspaceContext:
         openai_client = build_openai_client(self.settings, token)
         self.llm: LLMClient = llm or build_llm(self.settings, token)
         self.embedder: Embedder = embedder or build_embedder(self.settings.embedding_provider, openai_client, self.settings.openai_embedding_model)
+        # An empty balance or a rejected key can never be fixed by retrying: pick a provider that works (OpenAI, Claude, Gemini)
+        # or fall back to offline mode, instead of failing on every action.
+        self.offline_reason: str | None = None
+        self.llm_fallback = False
+        any_ai = openai_client is not None or self.settings.claude_configured or self.settings.gemini_configured
+        if llm is None and embedder is None and any_ai:
+            choice = select_providers(self.settings, openai_client, self.llm, self.embedder)
+            self.llm, self.embedder = choice.llm, choice.embedder
+            if choice.degraded:
+                self.offline_reason = getattr(choice.llm, "reason", None) or " ".join(choice.notes) or QUOTA_MESSAGE
+            elif choice.switched:
+                self.offline_reason = " ".join(choice.notes)
+                self.llm_fallback = True
+        if llm is None and not self.llm.available:
+            # No AI provider works: analyse with the built-in offline rules instead of leaving contracts unanalysed.
+            self.llm = RuleBasedLLM(note=self.offline_reason)
         self.index_error: str | None = None
         self.retriever: HybridRetriever | None
         try:
@@ -139,6 +158,12 @@ class WorkspaceContext:
         if self.retriever is not None:
             self.copilot = CopilotService(principal, self.repos, self.settings, self.llm, self.retriever, self.audit, self.obligations, self.deadlines,
                                           compare=self._compare_latest)
+        elif self.offline_reason:
+            # The saved index was built with OpenAI vectors; rebuild it offline so search keeps working.
+            try:
+                self.reindex_all()
+            except Exception as exc:  # noqa: BLE001 - search stays disabled with the original explanation
+                log.warning("offline re-index failed: %s", type(exc).__name__)
 
     # ------------------------------------------------------------------
     def _compare_latest(self, contract_id: UUID) -> None:
@@ -172,6 +197,8 @@ class WorkspaceContext:
             mode=self.settings.mode, is_demo=self.settings.is_demo, ai_configured=self.llm.available, model=self.llm.model if self.llm.available else "not configured",
             embedder=self.embedder.name, embedder_note="Offline lexical embeddings (lower search quality). Configure OpenAI for semantic search." if hashing else "OpenAI embeddings",
             vector_backend=c.vector_info.backend, vector_note=c.vector_info.note, ocr_available=c.ocr.is_available(), index_error=self.index_error,
+            extras={"offline_reason": self.offline_reason} if self.offline_reason and not self.llm_fallback else {},
+            model_note=self.offline_reason if self.llm_fallback else None,
         )
 
 

@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
-from PyQt6.QtGui import QAction, QActionGroup, QColor, QKeySequence, QPainter, QRadialGradient, QShortcut
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, QTimer
+from PyQt6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPainter, QRadialGradient, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
+    QMessageBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -33,13 +34,18 @@ from app.ui.components.evidence_panel import EvidenceVM
 from app.ui.components.primitives import NeonButton, SearchBar, StatusBadge
 from app.ui.components.toast import ToastManager
 from app.ui.context import BaseScreen, UiContext
+from app.ui.pending_analysis import run_pending_analysis
 from app.ui.theme import icons
 from app.ui.theme.motion import Motion, slide_fade_in
 from app.ui.theme.qss import build_qss
-from app.ui.theme.tokens import DARK, HIGH_CONTRAST, SPACE, set_theme, severity_tone, theme
+from app.ui.theme.tokens import CLASSIC, DARK, HIGH_CONTRAST, SPACE, is_classic, set_theme, severity_tone, theme
 from app.workers.tasks import TaskRunner
 
 log = get_logger(__name__)
+
+# classic theme: each menu entry gets its own colour, like the coloured toolbar icons of old desktop apps
+CLASSIC_NAV_COLORS = {"command": "#C05800", "contracts": "#303030", "obligations": "#008000", "renewals": "#C00000", "risk": "#C89A00", "evidence": "#0A24A8",
+                      "copilot": "#0A24A8", "runs": "#0A24A8", "integrations": "#008000", "admin": "#0A24A8"}
 
 NAV = [
     ("command", "Command Center", "command"), ("contracts", "Contract Intelligence", "contract"), ("obligations", "Obligation Operations", "obligations"),
@@ -72,7 +78,7 @@ class _Backdrop(QWidget):
         t = theme()
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(t.bg0))
-        if t.name != "high-contrast":
+        if t.name not in ("high-contrast", "classic"):
             for (cx, cy, color, radius) in ((0.08, 0.0, t.cyan, 0.55), (0.98, 1.0, t.violet, 0.6)):
                 g = QRadialGradient(QPointF(self.width() * cx, self.height() * cy), max(self.width(), self.height()) * radius)
                 c = QColor(color)
@@ -88,11 +94,18 @@ class _BellButton(QToolButton):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._count = 0
-        self.setIcon(icons.icon("bell", theme().text_dim, 20))
         self.setToolTip("Notifications")
         self.setAccessibleName("Notifications")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(38, 38)
+        if is_classic():
+            self.setIcon(icons.icon("bell", "#B07800", 26, 1.6))
+            self.setIconSize(QSize(26, 26))
+            self.setText("Alerts")
+            self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            self.setFixedSize(66, 52)
+        else:
+            self.setIcon(icons.icon("bell", theme().text_dim, 20))
+            self.setFixedSize(38, 38)
 
     def set_count(self, n: int) -> None:
         self._count = n
@@ -103,12 +116,16 @@ class _BellButton(QToolButton):
         super().paintEvent(e)
         if self._count:
             p = QPainter(self)
-            p.setRenderHint(QPainter.RenderHint.Antialiasing)
-            r = QRectF(self.width() - 20, 2, 18, 16)
-            p.setPen(Qt.PenStyle.NoPen)
+            classic = is_classic()
+            p.setRenderHint(QPainter.RenderHint.Antialiasing, not classic)
+            r = QRectF(self.width() - 22, 2, 18, 16)
+            p.setPen(QColor("#000000") if classic else Qt.PenStyle.NoPen)
             p.setBrush(QColor(theme().danger))
-            p.drawRoundedRect(r, 8, 8)
-            p.setPen(QColor("#12060A"))
+            if classic:
+                p.drawRect(r)
+            else:
+                p.drawRoundedRect(r, 8, 8)
+            p.setPen(QColor("#FFFFFF") if classic else QColor("#12060A"))
             f = p.font()
             f.setPixelSize(10)
             f.setBold(True)
@@ -220,29 +237,32 @@ class MainWindow(QMainWindow):
             self._status_labels[key] = lb
             sb.addWidget(lb) if key != "tasks" else sb.addPermanentWidget(lb)
         self._update_status()
+        self._build_menubar()
 
     def _topbar(self) -> QWidget:
+        classic = is_classic()
         bar = QFrame()
         bar.setObjectName("TopBar")
         bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        bar.setFixedHeight(64)
-        bar.setStyleSheet(f"QFrame#TopBar {{ background: rgba(6,10,18,0.85); border: none; border-bottom: 1px solid {theme().border}; }}")
+        bar.setFixedHeight(70 if classic else 64)
         h = QHBoxLayout(bar)
-        h.setContentsMargins(18, 8, 18, 8)
-        h.setSpacing(14)
+        h.setContentsMargins(14, 6, 14, 6)
+        h.setSpacing(12)
         logo = QLabel()
-        logo.setPixmap(icons.pixmap("logo", theme().cyan, 30, 1.6))
+        logo.setPixmap(icons.pixmap("logo", theme().cyan, 40 if classic else 30, 1.6))
         h.addWidget(logo)
         word = QVBoxLayout()
         word.setSpacing(0)
         w1 = QLabel("CONTRACTLENS")
-        w1.setStyleSheet(f"font-size: 15px; font-weight: 700; color: {theme().text}; letter-spacing: 2px; background: transparent; border: none;")
-        w2 = QLabel("ENTERPRISE · CONTRACT INTELLIGENCE")
-        w2.setStyleSheet(f"font-size: 9px; font-weight: 600; color: {theme().cyan}; background: transparent; border: none;")
+        w1.setObjectName("Wordmark")
+        w2 = QLabel("Enterprise - Contract Intelligence" if classic else "ENTERPRISE · CONTRACT INTELLIGENCE")
+        w2.setObjectName("WordmarkSub")
         word.addWidget(w1)
         word.addWidget(w2)
         h.addLayout(word)
         h.addSpacing(10)
+        if classic:
+            h.addWidget(QLabel("Workspace:"))
         self.workspace = QComboBox()
         self.workspace.setAccessibleName("Workspace selector")
         self.workspace.setMinimumWidth(190)
@@ -252,12 +272,16 @@ class MainWindow(QMainWindow):
         self.workspace.setCurrentIndex(idx)
         self.workspace.currentIndexChanged.connect(self._switch_workspace)
         h.addWidget(self.workspace)
-        self.search = SearchBar("Semantic search across contracts  (Ctrl+K)")
+        self.search = SearchBar("Search across contracts…" if classic else "Semantic search across contracts  (Ctrl+K)")
         self.search.setMinimumWidth(320)
         self.search.setMaximumWidth(560)
         self.search.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.search.submitted.connect(self._global_search)
         h.addWidget(self.search, 1)
+        if classic:
+            go = NeonButton("Search", "default")
+            go.clicked.connect(lambda: self._global_search(self.search.text().strip()))
+            h.addWidget(go)
         h.addStretch(0)
         self.agent_pill = AgentStatusPill()
         self.agent_pill.clicked.connect(lambda: self.navigate("runs"))
@@ -266,9 +290,17 @@ class MainWindow(QMainWindow):
         self.bell.clicked.connect(self._show_notifications)
         h.addWidget(self.bell)
         self.user_btn = QToolButton()
-        self.user_btn.setIcon(icons.icon("user", theme().text, 20))
-        self.user_btn.setText(f"  {self.ws.principal.display_name}")
-        self.user_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        if classic:
+            self.user_btn.setIcon(icons.icon("user", "#0A24A8", 26, 1.6))
+            self.user_btn.setIconSize(QSize(26, 26))
+            self.user_btn.setText(self.ws.principal.display_name)
+            self.user_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
+            self.user_btn.setMinimumWidth(84)
+            self.user_btn.setFixedHeight(52)
+        else:
+            self.user_btn.setIcon(icons.icon("user", theme().text, 20))
+            self.user_btn.setText(f"  {self.ws.principal.display_name}")
+            self.user_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.user_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.user_btn.setAccessibleName("User menu")
         self.user_btn.setMenu(self._user_menu())
@@ -291,6 +323,10 @@ class MainWindow(QMainWindow):
         self.act_contrast.setChecked(self.qsettings.value("high_contrast", False, type=bool))
         self.act_contrast.toggled.connect(self._set_high_contrast)
         m.addAction(self.act_contrast)
+        self.act_classic = QAction("Classic (Windows 9x) theme", m, checkable=True)
+        self.act_classic.setChecked(self._style() == "classic")
+        self.act_classic.toggled.connect(self._set_classic)
+        m.addAction(self.act_classic)
         m.addSeparator()
         out = QAction("Sign out", m)
         out.triggered.connect(self._sign_out)
@@ -302,12 +338,10 @@ class MainWindow(QMainWindow):
         w.setObjectName("DemoBanner")
         w.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         w.setFixedHeight(28)
-        w.setStyleSheet("QFrame#DemoBanner { background: rgba(139,124,255,0.16); border: none; border-bottom: 1px solid rgba(139,124,255,0.45); }")
         h = QHBoxLayout(w)
         h.setContentsMargins(18, 0, 18, 0)
-        txt = QLabel("DEMO / LOCAL MODE — sample data and a local index. Sample-contract analysis uses curated fixtures instead of a live model. "
+        txt = QLabel("DEMO / LOCAL MODE - sample data and a local index. Sample-contract analysis uses curated fixtures instead of a live model. "
                      "Configure Supabase and OpenAI in .env for production use.")
-        txt.setStyleSheet(f"color: {theme().violet}; font-size: 11px; font-weight: 600; background: transparent; border: none;")
         h.addWidget(txt)
         w.setVisible(self.ws.settings.is_demo)
         return w
@@ -317,7 +351,6 @@ class MainWindow(QMainWindow):
         frame.setObjectName("NavBar")
         frame.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         frame.setFixedWidth(232)
-        frame.setStyleSheet(f"QFrame#NavBar {{ background: rgba(8,13,24,0.7); border: none; border-right: 1px solid {theme().border}; }}")
         lay = QVBoxLayout(frame)
         lay.setContentsMargins(12, 16, 12, 12)
         lay.setSpacing(4)
@@ -329,7 +362,12 @@ class MainWindow(QMainWindow):
             b.setProperty("variant", None)
             b.setProperty("nav", True)
             b.setCheckable(True)
-            b.setIcon(icons.icon(icon_name, theme().text_dim, 20))
+            if is_classic():
+                ic = icons.icon(icon_name, CLASSIC_NAV_COLORS.get(nid, "#0A24A8"), 20)
+                ic.addPixmap(icons.pixmap(icon_name, "#FFFFFF", 20), QIcon.Mode.Normal, QIcon.State.On)  # white glyph on the navy selected item
+                b.setIcon(ic)
+            else:
+                b.setIcon(icons.icon(icon_name, theme().text_dim, 20))
             b.setToolTip(f"{title}  (Ctrl+{(i + 1) % 10})")
             b.setAccessibleName(title)
             b.clicked.connect(lambda _=False, n=nid: self.navigate(n))
@@ -392,15 +430,66 @@ class MainWindow(QMainWindow):
         self.qsettings.setValue("reduced_motion", on)
         self.toasts.show("Animations reduced." if on else "Animations enabled.", "info")
 
+    def _style(self) -> str:
+        return str(self.qsettings.value("theme_style", "classic"))
+
     def _set_high_contrast(self, on: bool) -> None:
         self.qsettings.setValue("high_contrast", on)
-        apply_theme(QApplication.instance(), on)
+        self._retheme()
         self.toasts.show("High-contrast theme on." if on else "Standard theme on.", "info")
-        for s in self.ctx.screens.values():
-            s.mark_stale()
-        self.update()
-        if self._current:
-            self.ctx.screens[self._current].load()
+
+    def _set_classic(self, on: bool) -> None:
+        self.qsettings.setValue("theme_style", "classic" if on else "modern")
+        self._retheme()
+        self.toasts.show("Classic theme on." if on else "Modern dark theme on.", "info")
+
+    def _retheme(self) -> None:
+        """Re-apply the stylesheet and rebuild the chrome and screens (colours and layout differ between themes)."""
+        apply_theme(QApplication.instance(), self.qsettings.value("high_contrast", False, type=bool), self._style())
+        current = self._current
+        self.ctx.screens.clear()
+        self._current = None
+        self._build_chrome()
+        self.setWindowIcon(icons.icon("logo", theme().cyan, 64, 1.6))
+        self.navigate(current or "command")
+
+    def _build_menubar(self) -> None:
+        mb = self.menuBar()
+        mb.clear()
+        f = mb.addMenu("&File")
+        f.addAction("Upload contract…\tCtrl+U", self.upload_contract)
+        f.addSeparator()
+        f.addAction("Sign out", self._sign_out)
+        f.addAction("Exit", self.close)
+        e = mb.addMenu("&Edit")
+        e.addAction("Search contracts…\tCtrl+K", lambda: (self.search.setFocus(), self.search.selectAll()))
+        e.addAction("Refresh this screen\tF5", lambda: self._current and self.ctx.screens[self._current].load())
+        v = mb.addMenu("&View")
+        for i, (nid, title, _icon) in enumerate(NAV):
+            v.addAction(f"{title}\tCtrl+{(i + 1) % 10}", lambda n=nid: self.navigate(n))
+        v.addSeparator()
+        for act in (getattr(self, "act_motion", None), getattr(self, "act_contrast", None), getattr(self, "act_classic", None)):
+            if act is not None:
+                v.addAction(act)
+        t = mb.addMenu("&Tools")
+        t.addAction("Run alert scan", self._run_scan)
+        t.addAction("Analyse all pending contracts", lambda: run_pending_analysis(self.ctx))
+        t.addAction("Notifications…", self._show_notifications)
+        a = mb.addMenu("&Agents")
+        a.addAction("Agent runs", lambda: self.navigate("runs"))
+        h = mb.addMenu("&Help")
+        h.addAction("Keyboard shortcuts…", self._show_shortcuts)
+        h.addAction(f"About {APP_NAME}…", self._show_about)
+
+    def _run_scan(self) -> None:
+        self.ctx.run(lambda: self.ws.alerts.scan(), lambda new: (self.toasts.show(f"{len(new)} new alert(s) need attention." if new else "No new alerts.", "warning" if new else "success"), self.refresh_badges()),
+                     name="alert scan")
+
+    def _show_shortcuts(self) -> None:
+        QMessageBox.information(self, "Keyboard shortcuts", "Ctrl+K  Search contracts\nCtrl+U  Upload a contract\nF5  Refresh this screen\nCtrl+1 … Ctrl+0  Go to a screen in the menu order")
+
+    def _show_about(self) -> None:
+        QMessageBox.about(self, f"About {APP_NAME}", f"{APP_NAME} v{__version__}\n\nContract intelligence and obligation tracking. It assists professionals and does not provide legal advice.")
 
     def _sign_out(self) -> None:
         self._sign_out_requested = True
@@ -448,6 +537,8 @@ class MainWindow(QMainWindow):
             if new:
                 self.toasts.show(f"{len(new)} new alert(s) need attention.", "warning")
             self.refresh_badges()
+            if getattr(self.ws, "offline_reason", None):
+                self.toasts.show("OpenAI has no credits left, so ContractLens is running offline: search works by wording and new contracts are not analysed by AI.", "warning", 10000)
             if self.ws.index_error:
                 self.toasts.show(self.ws.index_error, "warning", 9000)
 
@@ -472,7 +563,8 @@ class MainWindow(QMainWindow):
         s["mode"].setText(("DEMO/LOCAL" if info.is_demo else "SUPABASE") + "  |  ")
         s["vector"].setText(f"Vectors: {info.vector_backend}  |  ")
         s["embed"].setText(f"Embeddings: {info.embedder}  |  ")
-        s["ai"].setText(f"AI: {info.model if info.ai_configured else 'not configured'}  |  OCR: {'ready' if info.ocr_available else 'unavailable'}")
+        ai_state = "offline rules (no AI)" if info.model == "offline-rules" else info.model if info.ai_configured else "not configured"
+        s["ai"].setText(f"AI: {ai_state}  |  OCR: {'ready' if info.ocr_available else 'unavailable'}")
         s["tasks"].setText("Ready")
         s["vector"].setToolTip(info.vector_note)
         s["embed"].setToolTip(info.embedder_note)
@@ -493,8 +585,8 @@ class MainWindow(QMainWindow):
         return self._sign_out_requested
 
 
-def apply_theme(app: QApplication | None, high_contrast: bool) -> None:
-    set_theme(HIGH_CONTRAST if high_contrast else DARK)
+def apply_theme(app: QApplication | None, high_contrast: bool, style: str = "classic") -> None:
+    set_theme(HIGH_CONTRAST if high_contrast else (CLASSIC if style == "classic" else DARK))
     if app is not None:
         app.setStyleSheet(build_qss(theme()))
 

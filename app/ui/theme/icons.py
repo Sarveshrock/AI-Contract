@@ -29,6 +29,7 @@ ICONS: dict[str, str] = {
     "refresh": '<path d="M20 11a8 8 0 1 0-2.3 6"/><path d="M20 5v6h-6"/>',
     "close": '<path d="M6 6l12 12M18 6L6 18"/>',
     "chevron_right": '<path d="M9 5l7 7-7 7"/>',
+    "chevron_up": '<path d="M5 15l7-7 7 7"/>',
     "chevron_down": '<path d="M5 9l7 7 7-7"/>',
     "check": '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
     "alert": '<path d="M12 3.5l9.5 16.5h-19z"/><path d="M12 10v4.5M12 17.4v.2"/>',

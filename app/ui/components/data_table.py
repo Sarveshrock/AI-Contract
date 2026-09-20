@@ -9,7 +9,7 @@ from PyQt6.QtCore import QAbstractTableModel, QModelIndex, QRectF, QSortFilterPr
 from PyQt6.QtGui import QColor, QFont, QPainter
 from PyQt6.QtWidgets import QAbstractItemView, QApplication, QHeaderView, QLabel, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTableView, QVBoxLayout, QWidget
 
-from app.ui.theme.tokens import theme, tone_color
+from app.ui.theme.tokens import is_classic, theme, tone_color
 
 SORT_ROLE = Qt.ItemDataRole.UserRole + 1
 TONE_ROLE = Qt.ItemDataRole.UserRole + 2
@@ -101,6 +101,19 @@ class BadgeDelegate(QStyledItemDelegate):
         fm = painter.fontMetrics()
         w = fm.horizontalAdvance(text) + 18
         r = QRectF(option.rect.left() + 8, option.rect.center().y() - 10, min(w, option.rect.width() - 12), 20)
+        if is_classic():
+            from app.ui.theme.classic import BADGES
+
+            tone = index.data(TONE_ROLE) or "neutral"
+            fill, fg = BADGES.get(tone, BADGES["neutral"])
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
+            painter.setPen(QColor("#404040"))
+            painter.setBrush(QColor(fill))
+            painter.drawRect(r)
+            painter.setPen(QColor(fg))
+            painter.drawText(r, Qt.AlignmentFlag.AlignCenter, fm.elidedText(text, Qt.TextElideMode.ElideRight, int(r.width() - 10)))
+            painter.restore()
+            return
         bg = QColor(color)
         bg.setAlphaF(0.15)
         painter.setBrush(bg)
